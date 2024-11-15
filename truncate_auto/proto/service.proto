@@ -1,0 +1,170 @@
+syntax = "proto3";
+
+package service;
+
+service Truncate {
+  rpc PlayGame (stream PlayGameRequest) returns (stream PlayGameReply) {}
+}
+
+enum SquareValidity {
+  SQUARE_VALIDITY_UNSPECIFIED = 0;
+  SQUARE_VALIDITY_VALID = 1;
+  SQUARE_VALIDITY_INVALID = 2;
+  SQUARE_VALIDITY_PARTIAL = 3;
+}
+
+message WaterTile {
+  bool foggy = 1;
+}
+
+message LandTile {
+  bool foggy = 1;
+}
+
+message TownTile {
+  uint32 player = 1;
+  bool defeated = 2;
+  bool foggy = 3;
+}
+
+message ObeliskTile {
+  bool foggy = 1;
+}
+
+message ArtifactTile {
+  uint32 player = 1;
+  bool defeated = 2;
+  bool foggy = 3;
+}
+
+message OccupiedTile {
+  uint32 player = 1;
+  string tile = 2;
+  SquareValidity validity = 3;
+  bool foggy = 4;
+}
+
+message FogTile {}
+
+message Tile {
+  oneof tile {
+    WaterTile water = 1;
+    LandTile land = 2;
+    TownTile town = 3;
+    ObeliskTile obelisk = 4;
+    ArtifactTile artifact = 5;
+    OccupiedTile occupied = 6;
+    FogTile fog = 7;
+  }
+}
+
+message Squares {
+  repeated Tile tiles = 1;
+}
+
+message Board {
+  repeated Squares squares = 1;
+}
+
+message Coordinate {
+  uint32 x = 1;
+  uint32 y = 2;
+}
+
+message PlayRequest {
+  string player_name = 1;
+}
+
+message MoveRequest {
+  oneof move {
+    PlaceMove place_move = 1;
+    SwapMove swap_move = 2;
+  }
+}
+
+message PlaceMove {
+  string tile = 1;
+  Coordinate position = 2;
+}
+
+message SwapMove {
+  Coordinate from = 1;
+  Coordinate to = 2;
+}
+
+message PlayGameRequest {
+  // optional, echoed back on response if set
+  string request_id = 1;
+
+  oneof request {
+    // Initial request to play the game.
+    PlayRequest play_request = 2;
+    // Placing a tile or swapping tiles.
+    MoveRequest move_request = 3;
+    // TODO: Maybe add resigning and looking up dictionary words?
+  }
+}
+
+message PlayGameReply {
+  // echoed from request, blank if not in response to a player request
+  string request_id = 1;
+
+  oneof reply {
+    PlayReply play_reply = 2;
+    MoveReply move_reply = 3;
+    ErrorReply error_reply = 4;
+    PlayerMove player_move = 5;
+  }
+}
+
+message Player {
+  uint32 id = 1;
+  string name = 2;
+}
+
+message PlayReply {
+  uint32 player_id = 1;
+  // Initial hand
+  repeated string hand = 2;
+  // Initial board
+  Board board = 3;
+  repeated Player opponents = 4;
+  // ID of who should go first
+  uint32 first_to_move = 5;
+}
+
+message PlayerMove {
+  uint32 Player_id = 1;
+
+  oneof move {
+    PlaceMove place_move = 2;
+    SwapMove swap_move = 3;
+  }
+
+  Board board = 4;
+
+  // TODO: Maybe include what got destroyed?
+
+  // True if this move ended the game.
+  bool game_over = 5;
+}
+
+// Successful move
+message MoveReply {
+    // Hand after move
+    repeated string hand = 1;
+    // Board after move
+    Board board = 2;
+
+    // TODO: Maybe include what got destroyed?
+
+    // True if this move ended the game.
+    bool game_over = 3;
+}
+
+message ErrorReply {
+  // TODO: Maybe expose different error types
+  // Place: you don't have this tile, you can't play there
+  // Swap: You don't have tiles there, you just swapped, etc
+  string error = 1;
+}

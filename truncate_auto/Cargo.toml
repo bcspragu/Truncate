@@ -1,0 +1,18 @@
+[package]
+name = "truncate_auto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.93"
+async-stream = "0.3.6"
+dashmap = "6.1.0"
+h2 = "0.4.6"
+prost = "0.13.3"
+tokio = { version = "1.41.1", features = ["rt-multi-thread"] }
+tokio-stream = "0.1.16"
+tonic = "0.12.3"
+truncate_core = { path = "../truncate_core" }
+
+[build-dependencies]
+tonic-build = "0.12.3"

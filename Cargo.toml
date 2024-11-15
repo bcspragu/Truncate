@@ -6,4 +6,5 @@ members = [
     "truncate_server",
     "truncate_client",
     "truncate_dueller",
+    "truncate_auto",
 ]
