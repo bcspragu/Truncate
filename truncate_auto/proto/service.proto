@@ -113,7 +113,12 @@ message PlayGameReply {
     PlayReply play_reply = 2;
     MoveReply move_reply = 3;
     ErrorReply error_reply = 4;
+    // Notification of another player's move
     PlayerMove player_move = 5;
+
+    // A request from the server for the player to move
+    // Clients should not send a MoveRequest until they receive one of these.
+    MoveSolicitation move_solicitation = 6;
   }
 }
 
@@ -133,8 +138,13 @@ message PlayReply {
   uint32 first_to_move = 5;
 }
 
+message MoveSolicitation {
+  Board board = 1;
+}
+
+
 message PlayerMove {
-  uint32 Player_id = 1;
+  uint32 player_id = 1;
 
   oneof move {
     PlaceMove place_move = 2;

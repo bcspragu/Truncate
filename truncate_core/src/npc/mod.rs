@@ -19,6 +19,7 @@ use xxhash_rust::xxh3;
 
 use self::scoring::NPCParams;
 
+#[derive(Debug)]
 pub struct Arborist {
     assessed: usize,
     prune: bool,
@@ -120,6 +121,7 @@ impl Game {
         let arborist = counter.unwrap_or_else(|| &mut internal_arborist);
         for d in 1..depth {
             let maybelatest = Some(run_mini(d, arborist));
+
             if arborist.assessed > arborist.cap {
                 break;
             }

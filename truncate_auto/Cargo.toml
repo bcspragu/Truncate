@@ -7,6 +7,7 @@ edition = "2021"
 anyhow = "1.0.93"
 async-stream = "0.3.6"
 dashmap = "6.1.0"
+futures = "0.3.31"
 h2 = "0.4.6"
 prost = "0.13.3"
 tokio = { version = "1.41.1", features = ["rt-multi-thread"] }

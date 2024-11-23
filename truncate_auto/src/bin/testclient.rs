@@ -1,5 +1,6 @@
 use tokio::sync::mpsc;
 use tonic::Request;
+use truncate_auto::player_move_to_move;
 use truncate_auto::service::{self, move_request, MoveRequest, PlaceMove, PlayGameReply, SwapMove};
 
 use service::play_game_request;
@@ -7,6 +8,7 @@ use service::truncate_client::TruncateClient;
 use service::{PlayGameRequest, PlayRequest};
 use truncate_core::board::{Board, Coordinate, Square, SquareValidity};
 use truncate_core::game::Game;
+use truncate_core::moves::Move;
 use truncate_core::npc::scoring::NPCPersonality;
 use truncate_core::player::Hand;
 use truncate_core::rules::GameRules;
@@ -18,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (tx, mut rx) = mpsc::channel(128);
 
-    let mut game = Game::new(9, 9, None, GameRules::generation(1));
+    let mut game = Game::new(9, 9, None, GameRules::generation(2));
 
     let outbound = async_stream::stream! {
         let mut req_count = 0;
@@ -52,31 +54,82 @@ async fn main() -> anyhow::Result<()> {
                 return;
             },
         };
-        let player_id = pr.player_id;
 
-        let mut wire_board = match pr.board{
-            Some(b) => b,
-            None => {
-                eprintln!("initial response had no board");
-                return;
-            },
-        };
-        let mut hand = pr.hand;
-        loop {
-            let mut opp_index = 0;
-            for i in 0..(pr.opponents.len() + 1) {
-                if i == player_id as usize {
-                    game.add_player("Test Bot!".to_string());
-                } else {
-                    game.add_player(pr.opponents[opp_index].name.to_string());
-                    opp_index += 1;
-                }
+        let player_id = pr.player_id;
+        let mut opp_index = 0;
+        for i in 0..(pr.opponents.len() + 1) {
+            if i == player_id as usize {
+                println!("adding us!");
+                game.add_player("Test Bot!".to_string());
+            } else {
+                println!("adding opponent! {}", opp_index);
+                game.add_player(pr.opponents[opp_index].name.to_string());
+                opp_index += 1;
             }
+        }
+        game.players.get_mut(player_id as usize).unwrap().hand = to_hand(&pr.hand);
+        game.rules.battle_delay = 0;
+        game.start();
+
+        loop {
+            // Wait til we're told to move
+            let wire_board = loop {
+                let resp = match rx.recv().await {
+                    Some(resp) => resp,
+                    None => {
+
+                                eprintln!("channel closed before expected");
+                                return;
+                    },
+                };
+                let ms = match resp.reply {
+                    Some(service::play_game_reply::Reply::MoveSolicitation(ms)) => ms,
+                    Some(service::play_game_reply::Reply::PlayerMove(pm)) => match player_move_to_move(&pm) {
+                        Some(mv) => {
+                            // Add the move to our board.
+                            println!("Adding move {:?} from player {} to our board", mv, pm.player_id);
+
+                            // So we don't know the other player's hand, but the
+                            // game expects to have all that information, so we
+                            // just set their hand to the value they just played
+                            // to placate the game.
+                            if let Move::Place{player, tile, ..} = mv {
+                                game.players.get_mut(player).unwrap().hand = Hand(vec![tile]);
+                            }
+                            game.play_turn(mv, Some(&dict), Some(&dict), None).unwrap();
+
+                            continue;
+                        },
+                        None => {
+                            eprintln!("no move in player move from {}", pm.player_id);
+                            return;
+                        }
+                    },
+                    Some(v) => {
+                        println!("ignoring message {:?} that isn't a move solicitation", v);
+                        continue;
+                    },
+                    _ => {
+                        eprintln!("response had no actual response");
+                        return;
+                    }
+                };
+                break match ms.board{
+                    Some(b) => b,
+                    None => {
+                        eprintln!("initial response had no board");
+                        return;
+                    },
+                };
+            };
+            game.board = to_board(&wire_board);
+            game.board.cache_special_squares();
 
             let mut arb = truncate_core::npc::Arborist::pruning();
             let npc = NPCPersonality::jet();
-            game.board = to_board(&wire_board);
-            game.players.get_mut(player_id as usize).unwrap().hand = to_hand(&hand);
+            arb.capped(npc.params.evaluation_cap);
+
+            println!("Got board!\n\n{}\n\nPLayer ID {}", game.board, player_id);
             let (player_msg, _board_score) = Game::best_move(
                 &game,
                 Some(&dict),
@@ -147,8 +200,8 @@ async fn main() -> anyhow::Result<()> {
             };
             let mr = match play_resp.reply {
                 Some(service::play_game_reply::Reply::MoveReply(mr)) => mr,
-                Some(_) => {
-                    eprintln!("response was not a MoveReply");
+                Some(v) => {
+                    eprintln!("response was not a MoveReply {:?}", v);
                     return;
                 },
                 None => {
@@ -156,16 +209,12 @@ async fn main() -> anyhow::Result<()> {
                     return;
                 },
             };
-            wire_board = mr.board.unwrap();
-            hand = mr.hand;
+            game.players.get_mut(player_id as usize).unwrap().hand = to_hand(&mr.hand);
+            println!("we ({}) have hand {}", player_id, to_hand(&mr.hand));
             if mr.game_over {
                 println!("game is over!");
                 return;
             }
-            // let hand = pr.hand;
-            // let board = pr.board;
-            // let opponents = pr.opponents;
-            // let first_to_move = pr.first_to_move;
          }
     };
 
@@ -238,6 +287,7 @@ fn to_board(b: &service::Board) -> Board {
     }
 
     board.squares = squares;
+    board.cache_special_squares();
 
     board
 }
