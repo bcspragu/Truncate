@@ -157,6 +157,7 @@ impl GameHandler {
         };
 
         // Send the error to all users.
+        // TODO: Maybe audit the set of things we might send here, not all will necessarily make sense.
         let mut f = vec![];
         for gp in &self.players {
             f.push(gp.sender.send(Err(status.clone())));
@@ -304,7 +305,6 @@ impl GameHandler {
         // Do the move,
         match self.play_game_request_to_move(player_id, &req) {
             Ok(game_move) => {
-                println!("GOT MOVE {:?}", game_move);
                 let game_resp = self.game.write().unwrap().play_turn(
                     game_move.clone(),
                     Some(&self.valid_words),
@@ -314,11 +314,6 @@ impl GameHandler {
                 match game_resp {
                     Ok(gr) => {
                         let game = self.game.read().unwrap();
-                        println!(
-                            "player {} has hand {}",
-                            player_id,
-                            game.players.get(player_id).unwrap().hand
-                        );
                         return Ok((
                             PlayGameReply {
                                 request_id: req.request_id.clone(),
@@ -481,9 +476,6 @@ impl Truncate for AutoServer {
 
         if let Some(mut gh) = game_handler {
             tokio::spawn(async move {
-                // if let Some(Ok(v)) = in_stream.next().await {
-                //     println!("{:?}", v);
-                // }
                 gh.run_game().await;
             });
         }
@@ -511,28 +503,6 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-
-// fn test() {
-//     let mut player_index = 0;
-//     loop {
-//         let res = g
-//             .play_turn(
-//                 Move::Place {
-//                     player: player_index,
-//                     tile: 'a',
-//                     position: Coordinate::new(1, 2),
-//                 },
-//                 Some(&valid_words),
-//                 Some(&valid_words),
-//                 None,
-//             )
-//             .unwrap();
-//         println!("{:?}", res);
-//         // 0 -> 1 or 1 -> 0
-//         //
-//         player_index = 1 - player_index;
-//     }
-// }
 
 fn match_for_io_error(err_status: &Status) -> Option<&std::io::Error> {
     let mut err: &(dyn Error + 'static) = err_status;

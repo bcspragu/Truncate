@@ -1,3 +1,5 @@
+This fork exists mostly to add the ability to play Truncate games via an API, which will be used to host Truncate AI battles with custom implementations from multiple folk. See the `truncate_auto` directory for more info.
+
 # Truncate: A word-based strategy game
 
 Spell words to cut off your enemy and conquer their town.

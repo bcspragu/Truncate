@@ -59,10 +59,8 @@ async fn main() -> anyhow::Result<()> {
         let mut opp_index = 0;
         for i in 0..(pr.opponents.len() + 1) {
             if i == player_id as usize {
-                println!("adding us!");
                 game.add_player("Test Bot!".to_string());
             } else {
-                println!("adding opponent! {}", opp_index);
                 game.add_player(pr.opponents[opp_index].name.to_string());
                 opp_index += 1;
             }
@@ -210,7 +208,6 @@ async fn main() -> anyhow::Result<()> {
                 },
             };
             game.players.get_mut(player_id as usize).unwrap().hand = to_hand(&mr.hand);
-            println!("we ({}) have hand {}", player_id, to_hand(&mr.hand));
             if mr.game_over {
                 println!("game is over!");
                 return;
