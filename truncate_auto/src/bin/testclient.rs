@@ -5,7 +5,7 @@ use truncate_auto::service::{self, move_request, MoveRequest, PlaceMove, PlayGam
 
 use service::play_game_request;
 use service::truncate_client::TruncateClient;
-use service::{PlayGameRequest, PlayRequest};
+use service::{InitRequest, PlayGameRequest};
 use truncate_core::board::{Board, Coordinate, Square, SquareValidity};
 use truncate_core::game::Game;
 use truncate_core::moves::Move;
@@ -28,9 +28,11 @@ async fn main() -> anyhow::Result<()> {
             req_count += 1;
             req_count.to_string()
         };
+
+        // First request
         yield PlayGameRequest{
             request_id: request_id(),
-            request: Some(play_game_request::Request::PlayRequest(PlayRequest{
+            request: Some(play_game_request::Request::InitRequest(InitRequest{
                 player_name: "Test Bot!".to_string(),
             })),
         };
@@ -43,8 +45,8 @@ async fn main() -> anyhow::Result<()> {
                 return;
             },
         };
-        let pr = match play_resp.reply {
-            Some(service::play_game_reply::Reply::PlayReply(pr)) => pr,
+        let init_reply = match play_resp.reply {
+            Some(service::play_game_reply::Reply::InitReply(ir)) => ir,
             Some(_) => {
                 eprintln!("initial response was not a PlayReply");
                 return;
@@ -55,17 +57,17 @@ async fn main() -> anyhow::Result<()> {
             },
         };
 
-        let player_id = pr.player_id;
+        let player_id = init_reply.player_id;
         let mut opp_index = 0;
-        for i in 0..(pr.opponents.len() + 1) {
+        for i in 0..(init_reply.opponents.len() + 1) {
             if i == player_id as usize {
                 game.add_player("Test Bot!".to_string());
             } else {
-                game.add_player(pr.opponents[opp_index].name.to_string());
+                game.add_player(init_reply.opponents[opp_index].name.to_string());
                 opp_index += 1;
             }
         }
-        game.players.get_mut(player_id as usize).unwrap().hand = to_hand(&pr.hand);
+        game.players.get_mut(player_id as usize).unwrap().hand = to_hand(&init_reply.hand);
         game.rules.battle_delay = 0;
         game.start();
 
@@ -189,21 +191,14 @@ async fn main() -> anyhow::Result<()> {
             yield move_msg;
 
 
-            let play_resp: PlayGameReply = match rx.recv().await {
-                Some(pgr) => pgr,
-                None => {
-                    eprintln!("channel closed while reading move response");
-                    return;
-                },
-            };
-            let mr = match play_resp.reply {
-                Some(service::play_game_reply::Reply::MoveReply(mr)) => mr,
+            let mr = match rx.recv().await {
+                Some(PlayGameReply { reply: Some(service::play_game_reply::Reply::MoveReply(mr)), .. }) => mr,
                 Some(v) => {
                     eprintln!("response was not a MoveReply {:?}", v);
                     return;
-                },
+                }
                 None => {
-                    eprintln!("response had no actual response");
+                    eprintln!("channel closed while reading move response");
                     return;
                 },
             };

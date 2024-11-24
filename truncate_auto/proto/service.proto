@@ -71,7 +71,7 @@ message Coordinate {
   uint32 y = 2;
 }
 
-message PlayRequest {
+message InitRequest {
   string player_name = 1;
 }
 
@@ -98,7 +98,7 @@ message PlayGameRequest {
 
   oneof request {
     // Initial request to play the game.
-    PlayRequest play_request = 2;
+    InitRequest init_request = 2;
     // Placing a tile or swapping tiles.
     MoveRequest move_request = 3;
     // TODO: Maybe add resigning and looking up dictionary words?
@@ -110,7 +110,7 @@ message PlayGameReply {
   string request_id = 1;
 
   oneof reply {
-    PlayReply play_reply = 2;
+    InitReply init_reply = 2;
     MoveReply move_reply = 3;
     ErrorReply error_reply = 4;
     // Notification of another player's move
@@ -127,15 +127,13 @@ message Player {
   string name = 2;
 }
 
-message PlayReply {
+message InitReply {
   uint32 player_id = 1;
   // Initial hand
   repeated string hand = 2;
   // Initial board
   Board board = 3;
   repeated Player opponents = 4;
-  // ID of who should go first
-  uint32 first_to_move = 5;
 }
 
 message MoveSolicitation {

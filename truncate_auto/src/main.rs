@@ -1,5 +1,4 @@
 use tokio::sync::mpsc::error::SendError;
-use tonic::Streaming;
 use truncate_auto::service::{self, tile, SquareValidity};
 use truncate_auto::{move_request_to_move, move_to_player_move};
 
@@ -7,7 +6,7 @@ use service::play_game_request;
 use service::truncate_server::{Truncate, TruncateServer};
 use service::{ErrorReply, MoveReply, PlayGameReply, PlayGameRequest};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::{error::Error, io::ErrorKind, net::ToSocketAddrs, pin::Pin};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
@@ -107,13 +106,23 @@ struct GamePlayer {
     id: usize,
     name: String,
     sender: mpsc::Sender<Result<PlayGameReply, Status>>,
-    stream: Streaming<PlayGameRequest>,
+    // Streaming is not Sync, so we wrap it in a mutex
+    stream: mpsc::Receiver<Result<PlayGameRequest, Status>>,
     initial_req_id: String,
 }
 
 impl GamePlayer {
+    async fn send(&self, reply: PlayGameReply) -> Result<(), Status> {
+        self.sender.send(Ok(reply)).await.map_err(|e| {
+            Status::internal(format!(
+                "failed to send message to client {}: {:?}",
+                self.id, e
+            ))
+        })
+    }
+
     async fn get_message(&mut self) -> Result<PlayGameRequest, Status> {
-        match self.stream.next().await {
+        match self.stream.recv().await {
             Some(r) => match r {
                 Ok(rr) => Ok(rr),
                 Err(err) => {
@@ -142,7 +151,7 @@ impl GamePlayer {
 #[derive(Debug)]
 struct GameHandler {
     players: Vec<GamePlayer>,
-    game: Arc<RwLock<Game>>,
+    game: Game,
     valid_words: Arc<HashMap<String, WordData>>,
 }
 
@@ -167,109 +176,28 @@ impl GameHandler {
 
     async fn run_game_internal(&mut self) -> Result<(), Status> {
         // Send down the initial reply to each player
-        let mut v = vec![];
-        for gp in &self.players {
-            let game = self.game.read().unwrap();
-
-            let board = to_board(&game.board);
-            let hand = to_hand(&game.players.get(gp.id).unwrap().hand);
-            let opponents = game
-                .players
-                .iter()
-                .enumerate()
-                .filter(|(i, _v)| *i != gp.id)
-                .map(|(_i, v)| service::Player {
-                    id: gp.id as u32,
-                    name: v.name.clone(),
-                })
-                .collect();
-
-            let reply = PlayGameReply {
-                request_id: gp.initial_req_id.clone(),
-                reply: Some(service::play_game_reply::Reply::PlayReply(
-                    service::PlayReply {
-                        player_id: gp.id as u32,
-                        hand,
-                        board: Some(board),
-                        opponents,
-                        first_to_move: 0,
-                    },
-                )),
-            };
-            v.push(gp.sender.send(Ok(reply)));
-        }
-        for res in futures::future::join_all(v).await {
-            match res {
-                Err(SendError(Err(status))) => {
-                    return Err(Status::internal(format!(
-                        "failed to send message to player: {:?}",
-                        status
-                    )))
-                }
-                _ => { /* probably fine */ }
-            };
-        }
+        self.send_init_reply().await?;
 
         loop {
-            {
-                let cur_player = match self.current_player() {
-                    Some(cp) => cp,
-                    None => {
-                        eprintln!("no current player!");
-                        return Err(Status::internal("couldn't find a current player!"));
-                    }
-                };
+            // Let the next player know it's their turn to move.
+            self.send_move_solicitation().await?;
 
-                // Let the player know we'd like a move from them.
-                let board = to_board(&self.game.read().unwrap().board);
-                cur_player
-                    .sender
-                    .send(Ok(PlayGameReply {
-                        request_id: "".to_string(),
-                        reply: Some(service::play_game_reply::Reply::MoveSolicitation(
-                            service::MoveSolicitation { board: Some(board) },
-                        )),
-                    }))
-                    .await
-                    .map_err(|e| {
-                        Status::internal(format!("failed to send move solicitation: {:?}", e))
-                    })?;
-            }
+            // Now wait for them to move.
+            let (id, req) = self.get_move_from_player().await?;
 
-            // Now wait for their move
-            let req = {
-                let zz = match self.current_player_mut() {
-                    Some(cp) => cp,
-                    None => {
-                        eprintln!("no current player!");
-                        return Err(Status::internal("couldn't find a current player!"));
-                    }
-                };
-                zz.get_message().await?.clone()
-            };
-            let (player_id, others_reply) = {
-                let cur_player = match self.current_player() {
-                    Some(cp) => cp,
-                    None => {
-                        eprintln!("no current player!");
-                        return Err(Status::internal("couldn't find a current player!"));
-                    }
-                };
-
-                let (player_reply, others_reply) = self.handle_move(cur_player.id, req)?;
-                let id = cur_player.id;
-                cur_player
-                    .sender
-                    .send(Ok(player_reply))
-                    .await
-                    .map_err(|e| Status::internal(format!("failed to send reply {:?}", e)))?;
-                (id, others_reply)
-            };
+            let (player_reply, others_reply) = self.handle_move(id, req)?;
+            self.players
+                .get(id) // XXX: This relies on player_ids matching their index in `players`
+                .unwrap()
+                .sender
+                .send(Ok(player_reply))
+                .await
+                .map_err(|e| Status::internal(format!("failed to send reply {:?}", e)))?;
 
             if let Some(other_reply) = others_reply {
                 let mut v = vec![];
                 for gp in &self.players {
-                    if gp.id != player_id {
+                    if gp.id != id {
                         v.push(gp.sender.send(Ok(other_reply.clone())));
                     }
                 }
@@ -279,7 +207,7 @@ impl GameHandler {
     }
 
     fn current_player<'a>(&'a self) -> Option<&'a GamePlayer> {
-        let next_player = match self.game.read().unwrap().next_player {
+        let next_player = match self.game.next_player {
             Some(v) => v,
             None => return None,
         };
@@ -288,7 +216,7 @@ impl GameHandler {
     }
 
     fn current_player_mut<'a>(&'a mut self) -> Option<&'a mut GamePlayer> {
-        let next_player = match self.game.read().unwrap().next_player {
+        let next_player = match self.game.next_player {
             Some(v) => v,
             None => return None,
         };
@@ -298,14 +226,14 @@ impl GameHandler {
 
     // First move is a response to the player, second is for everyone else.
     fn handle_move(
-        &self,
+        &mut self,
         player_id: usize,
         req: PlayGameRequest,
     ) -> Result<(PlayGameReply, Option<PlayGameReply>), Status> {
         // Do the move,
         match self.play_game_request_to_move(player_id, &req) {
             Ok(game_move) => {
-                let game_resp = self.game.write().unwrap().play_turn(
+                let game_resp = self.game.play_turn(
                     game_move.clone(),
                     Some(&self.valid_words),
                     Some(&self.valid_words),
@@ -313,14 +241,15 @@ impl GameHandler {
                 );
                 match game_resp {
                     Ok(gr) => {
-                        let game = self.game.read().unwrap();
                         return Ok((
                             PlayGameReply {
                                 request_id: req.request_id.clone(),
                                 reply: Some(service::play_game_reply::Reply::MoveReply(
                                     MoveReply {
-                                        hand: to_hand(&game.players.get(player_id).unwrap().hand),
-                                        board: Some(to_board(&game.board)),
+                                        hand: to_hand(
+                                            &self.game.players.get(player_id).unwrap().hand,
+                                        ),
+                                        board: Some(to_board(&self.game.board)),
                                         game_over: gr.is_some(),
                                     },
                                 )),
@@ -329,7 +258,7 @@ impl GameHandler {
                                 request_id: "".to_string(),
                                 reply: Some(service::play_game_reply::Reply::PlayerMove(
                                     move_to_player_move(
-                                        to_board(&game.board),
+                                        to_board(&self.game.board),
                                         &game_move,
                                         gr.is_some(),
                                     ),
@@ -352,10 +281,10 @@ impl GameHandler {
         req: &PlayGameRequest,
     ) -> Result<Move, PlayGameReply> {
         match &req.request {
-            Some(play_game_request::Request::PlayRequest(_)) => {
+            Some(play_game_request::Request::InitRequest(_)) => {
                 return Err(error_reply(
                     &req.request_id,
-                    "player sent PlayRequest after game had begun",
+                    "player sent InitRequest after game had begun",
                 ))
             }
             Some(play_game_request::Request::MoveRequest(mr)) => {
@@ -376,6 +305,83 @@ impl GameHandler {
                 ))
             }
         }
+    }
+
+    async fn send_init_reply(&self) -> Result<(), Status> {
+        let mut v = vec![];
+        for gp in &self.players {
+            let board = to_board(&self.game.board);
+            let hand = to_hand(&self.game.players.get(gp.id).unwrap().hand);
+            let opponents = self
+                .game
+                .players
+                .iter()
+                .enumerate()
+                .filter(|(i, _v)| *i != gp.id)
+                .map(|(_i, v)| service::Player {
+                    id: gp.id as u32,
+                    name: v.name.clone(),
+                })
+                .collect();
+
+            let reply = PlayGameReply {
+                request_id: gp.initial_req_id.clone(),
+                reply: Some(service::play_game_reply::Reply::InitReply(
+                    service::InitReply {
+                        player_id: gp.id as u32,
+                        hand,
+                        board: Some(board),
+                        opponents,
+                    },
+                )),
+            };
+            v.push(gp.sender.send(Ok(reply)));
+        }
+        for res in futures::future::join_all(v).await {
+            match res {
+                Err(SendError(Err(status))) => {
+                    return Err(Status::internal(format!(
+                        "failed to send message to player: {:?}",
+                        status
+                    )))
+                }
+                _ => { /* probably fine */ }
+            };
+        }
+        Ok(())
+    }
+
+    async fn send_move_solicitation(&self) -> Result<(), Status> {
+        let cur_player = match self.current_player() {
+            Some(cp) => cp,
+            None => {
+                eprintln!("no current player!");
+                return Err(Status::internal("couldn't find a current player!"));
+            }
+        };
+
+        // Let the player know we'd like a move from them.
+        let board = to_board(&self.game.board);
+        cur_player
+            .send(PlayGameReply {
+                request_id: "".to_string(),
+                reply: Some(service::play_game_reply::Reply::MoveSolicitation(
+                    service::MoveSolicitation { board: Some(board) },
+                )),
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn get_move_from_player(&mut self) -> Result<(usize, PlayGameRequest), Status> {
+        let cur_player = match self.current_player_mut() {
+            Some(cp) => cp,
+            None => {
+                eprintln!("no current player!");
+                return Err(Status::internal("couldn't find a current player!"));
+            }
+        };
+        Ok((cur_player.id, cur_player.get_message().await?))
     }
 }
 
@@ -402,13 +408,20 @@ impl Truncate for AutoServer {
             }
         };
 
-        // let valid_words = Arc::clone(&self.valid_words);
         let mut in_stream = req.into_inner();
         let (tx, rx) = mpsc::channel(128);
 
-        // Okay, the game is on! We expect the first message to be a play request.
-        let play_req = match in_stream.next().await {
-            Some(Ok(pgr)) => pgr,
+        // Okay, the game is on! We expect the first message to be an init request.
+        let (player_id, request_id, player_name) = match in_stream.next().await {
+            Some(Ok(PlayGameRequest {
+                request_id,
+                request: Some(play_game_request::Request::InitRequest(ir)),
+            })) => (player_id, request_id, ir.player_name),
+            Some(Ok(_)) => {
+                return Err(Status::failed_precondition(
+                    "initial message from client was not an init request",
+                ))
+            }
             Some(Err(e)) => {
                 eprintln!("received error status from client {}", e);
                 return Err(Status::failed_precondition("client errored"));
@@ -418,26 +431,35 @@ impl Truncate for AutoServer {
                 return Err(Status::failed_precondition("no move was given?"));
             }
         };
-        let pr = match play_req.request {
-            Some(play_game_request::Request::PlayRequest(pr)) => pr,
-            Some(_) => {
-                return Err(Status::failed_precondition(
-                    "initial request was not a play request",
-                ))
+
+        let (in_tx, in_rx) = mpsc::channel(10);
+
+        tokio::spawn(async move {
+            while let Some(msg) = in_stream.next().await {
+                if let Err(e) = in_tx.send(msg).await {
+                    match e.0 {
+                        Ok(v) => eprintln!("failed to forward message: {:?}", v),
+                        Err(status) => {
+                            if let Some(io_err) = match_for_io_error(&status) {
+                                if io_err.kind() == ErrorKind::BrokenPipe {
+                                    eprintln!("player {} dropped", player_id);
+                                    return;
+                                }
+                            }
+
+                            eprintln!("error forwarding message: {:?}", status);
+                        }
+                    }
+                }
             }
-            None => {
-                return Err(Status::failed_precondition(
-                    "no actual request in initial request",
-                ))
-            }
-        };
+        });
 
         let gp = GamePlayer {
             id: player_id,
-            name: pr.player_name.clone(),
+            name: player_name,
             sender: tx,
-            stream: in_stream,
-            initial_req_id: play_req.request_id,
+            stream: in_rx,
+            initial_req_id: request_id,
         };
 
         let game_handler = match (player_id, gp_tx, gp_rx) {
@@ -455,7 +477,7 @@ impl Truncate for AutoServer {
                 game.start();
                 Some(GameHandler {
                     players: vec![gp, other_player_gp],
-                    game: Arc::new(RwLock::new(game)),
+                    game,
                     valid_words: Arc::clone(&self.valid_words),
                 })
             }
