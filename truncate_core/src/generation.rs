@@ -1,6 +1,6 @@
 use std::{
     collections::{BinaryHeap, HashSet, VecDeque},
-    ops::{Add, Div, Mul},
+    ops::{Add, Div},
 };
 
 use noise::{NoiseFn, Simplex};

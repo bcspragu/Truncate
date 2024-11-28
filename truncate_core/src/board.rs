@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::array::IntoIter;
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
-use std::iter::{FilterMap, Flatten};
+use std::iter::Flatten;
 use std::slice::Iter;
 
 use super::reporting::{BoardChange, BoardChangeAction, BoardChangeDetail};
@@ -12,7 +12,7 @@ use crate::error::GamePlayError;
 use crate::judge::WordDict;
 use crate::reporting::Change;
 use crate::rules::{ArtifactDefense, GameRules, WinCondition};
-use crate::{player, rules};
+use crate::rules;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Direction {
@@ -1346,12 +1346,12 @@ impl Board {
                         }
                     }
 
-                    for (coord, square) in self.neighbouring_squares(coord) {
+                    for (coord, _) in self.neighbouring_squares(coord) {
                         visible_coords.insert(coord);
                     }
                 }
                 Ok(Square::Occupied {
-                    player, validity, ..
+                    player, ..
                 }) if player == player_index => {
                     let word_coords = self.get_words(coord);
                     let valid = word_coords
