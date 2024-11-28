@@ -1,8 +1,6 @@
 use oorandom::Rand32;
 use std::fmt;
 
-use crate::rules;
-
 /*
 INFO: Letter distributions in Truncate's dict
 

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     board::Board,
     generation::{
-        ArtifactType, BoardElements, BoardNoiseParams, BoardParams, BoardSeed, Symmetry, WaterLayer,
+        ArtifactType, BoardElements, BoardNoiseParams, BoardParams, Symmetry, WaterLayer,
     },
 };
 

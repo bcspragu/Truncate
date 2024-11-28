@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::ops::Sub;
 
 use time::Duration;
 use xxhash_rust::xxh3;
@@ -368,7 +367,7 @@ impl Game {
                     player.paused_turn_delta = None;
                 }
             }
-            rules::Timing::PerTurn { time_allowance } => unimplemented!(),
+            rules::Timing::PerTurn { time_allowance: _ } => unimplemented!(),
             rules::Timing::None => { /* no-op */ }
         }
     }
