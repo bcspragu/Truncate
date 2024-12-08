@@ -431,6 +431,7 @@ impl Game {
             let newly_visible_board = self.board.filter_to_player(
                 player,
                 &self.rules.visibility,
+                &self.rules.board_orientation,
                 &self.winner,
                 seen,
                 false,
@@ -559,6 +560,7 @@ impl Game {
                     player,
                     player_reported_position,
                     &self.rules.visibility,
+                    &self.rules.board_orientation,
                     &self.players[player].seen_tiles,
                 );
 
@@ -610,12 +612,14 @@ impl Game {
                         player_index,
                         player_reported_positions[0],
                         &self.rules.visibility,
+                        &self.rules.board_orientation,
                         &self.players[player_index].seen_tiles,
                     ),
                     self.board.map_player_coord_to_game(
                         player_index,
                         player_reported_positions[1],
                         &self.rules.visibility,
+                        &self.rules.board_orientation,
                         &self.players[player_index].seen_tiles,
                     ),
                 ];
@@ -891,23 +895,25 @@ impl Game {
     pub fn filter_game_to_player(&self, player_index: usize) -> (Board, Vec<Change>) {
         let seen = &self.players[player_index].seen_tiles;
 
-        let visible_board = self.board.filter_to_player(
+        let filtered_board = self.board.filter_to_player(
             player_index,
             &self.rules.visibility,
+            &self.rules.board_orientation,
             &self.winner,
             seen,
             true,
         );
 
-        let visible_changes = reporting::filter_to_player(
+        let filtered_changes = reporting::filter_to_player(
             &self.recent_changes,
             &self.board,
-            &visible_board,
+            &filtered_board,
             player_index,
             &self.rules.visibility,
+            &self.rules.board_orientation,
             &self.winner,
             seen,
         );
-        (visible_board, visible_changes)
+        (filtered_board, filtered_changes)
     }
 }

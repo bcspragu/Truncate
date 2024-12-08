@@ -169,6 +169,7 @@ pub(crate) fn filter_to_player(
     visible_board: &Board,
     player_index: usize,
     visibility: &rules::Visibility,
+    board_orientation: &rules::BoardOrientation,
     winner: &Option<usize>,
     seen_tiles: &HashSet<Coordinate>,
 ) -> Vec<Change> {
@@ -194,6 +195,7 @@ pub(crate) fn filter_to_player(
                     player_index,
                     *coordinate,
                     visibility,
+                    board_orientation,
                     seen_tiles,
                 ) else {
                     return None;
