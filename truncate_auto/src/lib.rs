@@ -2,6 +2,7 @@ use service::{move_request, player_move};
 use std::collections::HashMap;
 use truncate_core::{
     board::Coordinate,
+    game::Game,
     judge::{WordData, WordDict},
     moves::Move,
 };
@@ -123,5 +124,27 @@ pub fn swap_move_to_move(player_id: usize, sm: &service::SwapMove) -> Move {
                 y: to_pos.y as usize,
             },
         ],
+    }
+}
+
+pub fn invert_move(game: &Game, game_move: &Move) -> Move {
+    // Possible TODO: This does __not__ handle fog of war coordinate mutations.
+    match game_move {
+        Move::Place {
+            player,
+            tile,
+            position,
+        } => Move::Place {
+            player: *player,
+            tile: *tile,
+            position: game.board.reciprocal_coordinate(*position),
+        },
+        Move::Swap { player, positions } => Move::Swap {
+            player: *player,
+            positions: [
+                game.board.reciprocal_coordinate(positions[0]),
+                game.board.reciprocal_coordinate(positions[1]),
+            ],
+        },
     }
 }

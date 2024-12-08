@@ -1,6 +1,6 @@
 use tokio::sync::mpsc::error::SendError;
 use truncate_auto::service::{self, tile, SquareValidity};
-use truncate_auto::{move_request_to_move, move_to_player_move};
+use truncate_auto::{invert_move, move_request_to_move, move_to_player_move};
 
 use service::play_game_request;
 use service::truncate_server::{Truncate, TruncateServer};
@@ -13,7 +13,7 @@ use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{transport::Server, Response, Status};
 use truncate_core::board::{Board, Square};
 use truncate_core::player::Hand;
-use truncate_core::rules::GameRules;
+use truncate_core::rules::{BoardOrientation, GameRules};
 use truncate_core::{game::Game, judge::WordData, moves::Move};
 
 pub struct AutoServer {
@@ -99,6 +99,11 @@ fn to_board(b: &Board) -> service::Board {
     }
 
     service::Board { squares }
+}
+
+fn to_player_board(g: &Game, player: usize) -> service::Board {
+    let (filtered_board, _) = g.filter_game_to_player(player);
+    to_board(&filtered_board)
 }
 
 #[derive(Debug)]
@@ -194,11 +199,22 @@ impl GameHandler {
                 .await
                 .map_err(|e| Status::internal(format!("failed to send reply {:?}", e)))?;
 
-            if let Some(other_reply) = others_reply {
+            if let Some((other_move, gr)) = others_reply {
                 let mut v = vec![];
                 for gp in &self.players {
                     if gp.id != id {
-                        v.push(gp.sender.send(Ok(other_reply.clone())));
+                        // Possible TODO: This does __not__ handle fog of war coordinate mutations.
+                        let tailored_reply = PlayGameReply {
+                            request_id: "".to_string(),
+                            reply: Some(service::play_game_reply::Reply::PlayerMove(
+                                move_to_player_move(
+                                    to_player_board(&self.game, gp.id),
+                                    &invert_move(&self.game, &other_move),
+                                    gr,
+                                ),
+                            )),
+                        };
+                        v.push(gp.sender.send(Ok(tailored_reply)));
                     }
                 }
                 futures::future::join_all(v).await;
@@ -229,7 +245,7 @@ impl GameHandler {
         &mut self,
         player_id: usize,
         req: PlayGameRequest,
-    ) -> Result<(PlayGameReply, Option<PlayGameReply>), Status> {
+    ) -> Result<(PlayGameReply, Option<(Move, bool)>), Status> {
         // Do the move,
         match self.play_game_request_to_move(player_id, &req) {
             Ok(game_move) => {
@@ -249,21 +265,12 @@ impl GameHandler {
                                         hand: to_hand(
                                             &self.game.players.get(player_id).unwrap().hand,
                                         ),
-                                        board: Some(to_board(&self.game.board)),
+                                        board: Some(to_player_board(&self.game, player_id)),
                                         game_over: gr.is_some(),
                                     },
                                 )),
                             },
-                            Some(PlayGameReply {
-                                request_id: "".to_string(),
-                                reply: Some(service::play_game_reply::Reply::PlayerMove(
-                                    move_to_player_move(
-                                        to_board(&self.game.board),
-                                        &game_move,
-                                        gr.is_some(),
-                                    ),
-                                )),
-                            }),
+                            Some((game_move, gr.is_some())),
                         ));
                     }
                     Err(msg) => return Ok((error_reply(req.request_id, msg), None)),
@@ -310,7 +317,7 @@ impl GameHandler {
     async fn send_init_reply(&self) -> Result<(), Status> {
         let mut v = vec![];
         for gp in &self.players {
-            let board = to_board(&self.game.board);
+            let board = to_player_board(&self.game, gp.id);
             let hand = to_hand(&self.game.players.get(gp.id).unwrap().hand);
             let opponents = self
                 .game
@@ -361,7 +368,7 @@ impl GameHandler {
         };
 
         // Let the player know we'd like a move from them.
-        let board = to_board(&self.game.board);
+        let board = to_player_board(&self.game, cur_player.id);
         cur_player
             .send(PlayGameReply {
                 request_id: "".to_string(),
@@ -470,6 +477,7 @@ impl Truncate for AutoServer {
                 })?;
 
                 let mut game = Game::new(9, 9, None, GameRules::generation(2));
+                game.rules.board_orientation = BoardOrientation::FacingPlayer;
                 game.add_player(gp.name.clone());
                 game.add_player(other_player_gp.name.clone());
                 game.rules.battle_delay = 0;
