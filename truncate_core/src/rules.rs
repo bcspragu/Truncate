@@ -48,6 +48,12 @@ pub enum Visibility {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BoardOrientation {
+    Standard,
+    FacingPlayer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Truncation {
     Root,
     Larger, // TODO: Implement
@@ -122,6 +128,7 @@ pub struct GameRules {
     pub win_condition: WinCondition,
     pub win_metric: WinMetric,
     pub visibility: Visibility,
+    pub board_orientation: BoardOrientation,
     pub truncation: Truncation,
     pub timing: Timing,
     pub hand_size: usize,
@@ -148,6 +155,7 @@ const RULE_GENERATIONS: [(Option<EffectiveRuleDay>, GameRules); 3] = [
             },
             win_metric: WinMetric::TownProximity,
             visibility: Visibility::Standard,
+            board_orientation: BoardOrientation::Standard,
             truncation: Truncation::Root,
             timing: Timing::None,
             hand_size: 7,
@@ -170,6 +178,7 @@ const RULE_GENERATIONS: [(Option<EffectiveRuleDay>, GameRules); 3] = [
             },
             win_metric: WinMetric::TownProximity,
             visibility: Visibility::Standard,
+            board_orientation: BoardOrientation::Standard,
             truncation: Truncation::Root,
             timing: Timing::None,
             hand_size: 7,
@@ -192,6 +201,7 @@ const RULE_GENERATIONS: [(Option<EffectiveRuleDay>, GameRules); 3] = [
             },
             win_metric: WinMetric::TownProximity,
             visibility: Visibility::Standard,
+            board_orientation: BoardOrientation::Standard,
             truncation: Truncation::Root,
             timing: Timing::None,
             hand_size: 7,
@@ -243,6 +253,7 @@ impl GameRules {
             },
             win_metric: WinMetric::ObeliskProximity,
             visibility: Visibility::LandFog,
+            board_orientation: BoardOrientation::Standard,
             truncation: Truncation::None,
             timing: Timing::PerPlayer {
                 time_allowance: 75 * 60,

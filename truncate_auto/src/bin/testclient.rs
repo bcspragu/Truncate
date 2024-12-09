@@ -11,7 +11,7 @@ use truncate_core::game::Game;
 use truncate_core::moves::Move;
 use truncate_core::npc::scoring::NPCPersonality;
 use truncate_core::player::Hand;
-use truncate_core::rules::GameRules;
+use truncate_core::rules::{BoardOrientation, GameRules};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -69,6 +69,9 @@ async fn main() -> anyhow::Result<()> {
         }
         game.players.get_mut(player_id as usize).unwrap().hand = to_hand(&init_reply.hand);
         game.rules.battle_delay = 0;
+        if let Some(board) = init_reply.board {
+            game.board = to_board(&board, player_id);
+        }
         game.start();
 
         loop {
@@ -122,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                     },
                 };
             };
-            game.board = to_board(&wire_board);
+            game.board = to_board(&wire_board, player_id);
             game.board.cache_special_squares();
 
             let mut arb = truncate_core::npc::Arborist::pruning();
@@ -269,7 +272,7 @@ fn to_squares(sqs: &service::Squares) -> Vec<Square> {
     sqs.tiles.iter().map(|s| board_tile_to_square(&s)).collect()
 }
 
-fn to_board(b: &service::Board) -> Board {
+fn to_board(b: &service::Board, player_id: u32) -> Board {
     let mut board = Board::new(9, 9);
 
     let mut squares: Vec<Vec<Square>> = vec![];
@@ -280,6 +283,15 @@ fn to_board(b: &service::Board) -> Board {
 
     board.squares = squares;
     board.cache_special_squares();
+
+    if player_id == 0 {
+        // TODO: this is a fragile place to do this,
+        // as it assumes the server has flipped the board,
+        // and the default orientations were in place.
+        // This should be adapted once the work to
+        // tag each player with a specific orientation is complete.
+        board.orientations.reverse();
+    }
 
     board
 }

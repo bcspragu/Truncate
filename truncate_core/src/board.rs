@@ -4,6 +4,7 @@ use std::array::IntoIter;
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
 use std::iter::{FilterMap, Flatten};
+use std::ops::Sub;
 use std::slice::Iter;
 
 use super::reporting::{BoardChange, BoardChangeAction, BoardChangeDetail};
@@ -11,7 +12,7 @@ use crate::bag::TileBag;
 use crate::error::GamePlayError;
 use crate::judge::WordDict;
 use crate::reporting::Change;
-use crate::rules::{ArtifactDefense, GameRules, WinCondition};
+use crate::rules::{ArtifactDefense, BoardOrientation, GameRules, WinCondition};
 use crate::{player, rules};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,8 +67,8 @@ pub struct Board {
     pub artifacts: Vec<Coordinate>,
     pub towns: Vec<Coordinate>,
     pub obelisks: Vec<Coordinate>,
-    orientations: Vec<Direction>, // The side of the board that the player is sitting at, and the direction that their vertical words go in
-                                  // TODO: Move orientations off the Board and have them tagged against specific players
+    pub orientations: Vec<Direction>, // The side of the board that the player is sitting at, and the direction that their vertical words go in
+                                      // TODO: Move orientations off the Board and have them tagged against specific players
 }
 
 // TODO: provide a way to validate the board
@@ -573,10 +574,7 @@ impl Board {
     }
 
     pub fn reciprocal_coordinate(&self, input: Coordinate) -> Coordinate {
-        Coordinate {
-            x: self.width() - 1 - input.x,
-            y: self.height() - 1 - input.y,
-        }
+        reciprocal_coordinate_within(input, self.width(), self.height())
     }
 }
 
@@ -1455,101 +1453,183 @@ impl Board {
         new_board
     }
 
-    /// Used for fog of war modes.
     /// Takes the coordinate given by a player, and maps it back
-    /// to the full board that the player cannot see ( and thus does not have coordinates for)
+    /// to the full game board.
+    /// Applies fog-of-war rules to map to the board that the player cannot see
+    /// (and thus does not have coordinates for).
+    /// Also applies rotation if required, to face the board to the player.
     pub fn map_player_coord_to_game(
         &self,
         player_index: usize,
         player_coordinate: Coordinate,
         visibility: &rules::Visibility,
+        board_orientation: &BoardOrientation,
         seen_tiles: &HashSet<Coordinate>,
     ) -> Coordinate {
-        let foggy_board = match visibility {
+        match visibility {
             rules::Visibility::Standard | rules::Visibility::TileFog => {
-                // In these modes, the player knows the full coordinate space, so no remapping is required.
-                return player_coordinate;
+                // In these modes, the player knows the full coordinate space, so no fog remapping is required.
+                match player_index {
+                    0 => match board_orientation {
+                        BoardOrientation::Standard => player_coordinate,
+                        BoardOrientation::FacingPlayer => {
+                            self.reciprocal_coordinate(player_coordinate)
+                        }
+                    },
+                    1 => player_coordinate,
+                    _ => unimplemented!("Handle orientation for >2 players"),
+                }
             }
             rules::Visibility::LandFog | rules::Visibility::OnlyHouseFog => {
-                self.fog_of_war(player_index, visibility, seen_tiles)
+                let foggy_board = self.fog_of_war(player_index, visibility, seen_tiles);
+                let redundant_player = foggy_board.redundant_edges();
+                let redundant_global = self.redundant_edges();
+
+                let reciprocal_player_coord = match player_index {
+                    0 => match board_orientation {
+                        BoardOrientation::Standard => player_coordinate,
+                        BoardOrientation::FacingPlayer => {
+                            let player_width = self
+                                .width()
+                                .sub(redundant_player.left - redundant_global.left)
+                                .sub(redundant_player.right - redundant_global.right);
+                            let player_height = self
+                                .height()
+                                .sub(redundant_player.top - redundant_global.top)
+                                .sub(redundant_player.bottom - redundant_global.bottom);
+                            reciprocal_coordinate_within(
+                                player_coordinate,
+                                player_width,
+                                player_height,
+                            )
+                        }
+                    },
+                    1 => player_coordinate,
+                    _ => unimplemented!("Handle orientation for >2 players"),
+                };
+
+                Coordinate {
+                    x: reciprocal_player_coord.x + (redundant_player.left - redundant_global.left),
+                    y: reciprocal_player_coord.y + (redundant_player.top - redundant_global.top),
+                }
             }
-        };
-
-        let redundant_player = foggy_board.redundant_edges();
-        let redundant_global = self.redundant_edges();
-
-        Coordinate {
-            x: player_coordinate.x + (redundant_player.left - redundant_global.left),
-            y: player_coordinate.y + (redundant_player.top - redundant_global.top),
         }
     }
 
-    /// Used for fog of war modes.
-    /// Takes a concrete game coordinate, and maps it to the visible coordinate space of the player
+    /// Takes a concrete game coordinate, and maps it to the visible coordinate space of the player.
+    /// Applies fog-of-war rules, and board rotations.
     pub fn map_game_coord_to_player(
         &self,
         player_index: usize,
         game_coordinate: Coordinate,
         visibility: &rules::Visibility,
+        board_orientation: &BoardOrientation,
         seen_tiles: &HashSet<Coordinate>,
     ) -> Option<Coordinate> {
-        let foggy_board = match visibility {
+        match visibility {
             rules::Visibility::Standard | rules::Visibility::TileFog => {
                 // In these modes, the player knows the full coordinate space, so no remapping is required.
-                return Some(game_coordinate);
+                Some(match player_index {
+                    0 => match board_orientation {
+                        BoardOrientation::Standard => game_coordinate,
+                        BoardOrientation::FacingPlayer => {
+                            self.reciprocal_coordinate(game_coordinate)
+                        }
+                    },
+                    1 => game_coordinate,
+                    _ => unimplemented!("Handle orientation for >2 players"),
+                })
             }
             rules::Visibility::LandFog | rules::Visibility::OnlyHouseFog => {
-                self.fog_of_war(player_index, visibility, seen_tiles)
+                let foggy_board = self.fog_of_war(player_index, visibility, seen_tiles);
+
+                let redundant_player = foggy_board.redundant_edges();
+                let redundant_global = self.redundant_edges();
+
+                let x = game_coordinate
+                    .x
+                    .checked_sub(redundant_player.left - redundant_global.left);
+                let y = game_coordinate
+                    .y
+                    .checked_sub(redundant_player.top - redundant_global.top);
+
+                if let (Some(x), Some(y)) = (x, y) {
+                    let player_coordinate = Coordinate { x, y };
+                    Some(match player_index {
+                        0 => match board_orientation {
+                            BoardOrientation::Standard => player_coordinate,
+                            BoardOrientation::FacingPlayer => {
+                                let player_width = self
+                                    .width()
+                                    .sub(redundant_player.left - redundant_global.left)
+                                    .sub(redundant_player.right - redundant_global.right);
+                                let player_height = self
+                                    .height()
+                                    .sub(redundant_player.top - redundant_global.top)
+                                    .sub(redundant_player.bottom - redundant_global.bottom);
+                                reciprocal_coordinate_within(
+                                    player_coordinate,
+                                    player_width,
+                                    player_height,
+                                )
+                            }
+                        },
+                        1 => player_coordinate,
+                        _ => unimplemented!("Handle orientation for >2 players"),
+                    })
+                } else {
+                    return None;
+                }
             }
-        };
+        }
+    }
 
-        let redundant_player = foggy_board.redundant_edges();
-        let redundant_global = self.redundant_edges();
-
-        let Some(x) = game_coordinate
-            .x
-            .checked_sub(redundant_player.left - redundant_global.left)
-        else {
-            return None;
-        };
-        let Some(y) = game_coordinate
-            .y
-            .checked_sub(redundant_player.top - redundant_global.top)
-        else {
-            return None;
-        };
-
-        Some(Coordinate { x, y })
+    pub fn rotate_in_place(&mut self) {
+        self.squares.reverse();
+        self.squares.iter_mut().for_each(|s| s.reverse());
+        self.cache_special_squares();
     }
 
     pub(crate) fn filter_to_player(
         &self,
         player_index: usize,
         visibility: &rules::Visibility,
+        board_orientation: &BoardOrientation,
         winner: &Option<usize>,
         seen_tiles: &HashSet<Coordinate>,
         trim_coords: bool,
     ) -> Self {
         // All visibility is restored when the game ends
-        if winner.is_some() {
-            return self.clone();
-        }
+        let mut new_board = if winner.is_some() {
+            self.clone()
+        } else {
+            match visibility {
+                rules::Visibility::Standard => self.clone(),
+                rules::Visibility::TileFog
+                | rules::Visibility::LandFog
+                | rules::Visibility::OnlyHouseFog => {
+                    let mut foggy = self.fog_of_war(player_index, visibility, seen_tiles);
 
-        match visibility {
-            rules::Visibility::Standard => self.clone(),
-            rules::Visibility::TileFog
-            | rules::Visibility::LandFog
-            | rules::Visibility::OnlyHouseFog => {
-                let mut foggy = self.fog_of_war(player_index, visibility, seen_tiles);
+                    if trim_coords {
+                        // Remove extraneous water, so the client doesn't know the dimensions of the play area
+                        foggy.trim();
+                    }
 
-                if trim_coords {
-                    // Remove extraneous water, so the client doesn't know the dimensions of the play area
-                    foggy.trim();
+                    foggy
                 }
-
-                foggy
             }
+        };
+
+        match player_index {
+            0 => match board_orientation {
+                BoardOrientation::Standard => {}
+                BoardOrientation::FacingPlayer => new_board.rotate_in_place(),
+            },
+            1 => {}
+            _ => unimplemented!("Handle orientation for >2 players"),
         }
+
+        new_board
     }
 }
 
@@ -2033,6 +2113,13 @@ impl BoardDistances {
                 None
             }
         })
+    }
+}
+
+fn reciprocal_coordinate_within(coord: Coordinate, width: usize, height: usize) -> Coordinate {
+    Coordinate {
+        x: width - 1 - coord.x,
+        y: height - 1 - coord.y,
     }
 }
 
@@ -3032,6 +3119,58 @@ pub mod tests {
     }
 
     #[test]
+    fn apply_rotation() {
+        let board = Board::from_string(
+            "~~ ~~ A0 ~~ ~~\n\
+             A0 A0 A0 A0 A0\n\
+             A0 __ __ A0 __\n\
+             A0 __ __ __ __\n\
+             A0 A0 __ B1 __\n\
+             A0 __ B1 B1 __\n\
+             ~~ ~~ B1 ~~ ~~",
+        );
+
+        let rotated = board.filter_to_player(
+            0,
+            &rules::Visibility::Standard,
+            &rules::BoardOrientation::FacingPlayer,
+            &None,
+            &HashSet::new(),
+            true,
+        );
+        assert_eq!(
+            rotated.to_string(),
+            "~~ ~~ B1 ~~ ~~\n\
+             __ B1 B1 __ A0\n\
+             __ B1 __ A0 A0\n\
+             __ __ __ __ A0\n\
+             __ A0 __ __ A0\n\
+             A0 A0 A0 A0 A0\n\
+             ~~ ~~ A0 ~~ ~~",
+        );
+
+        let source_coord = Coordinate { x: 1, y: 1 };
+        let game_coord_0 = board.map_player_coord_to_game(
+            0,
+            source_coord,
+            &rules::Visibility::Standard,
+            &rules::BoardOrientation::FacingPlayer,
+            &HashSet::new(),
+        );
+
+        let game_coord_1 = board.map_player_coord_to_game(
+            1,
+            source_coord,
+            &rules::Visibility::Standard,
+            &rules::BoardOrientation::FacingPlayer,
+            &HashSet::new(),
+        );
+
+        assert_eq!(game_coord_0, Coordinate { x: 3, y: 5 });
+        assert_eq!(game_coord_1, source_coord);
+    }
+
+    #[test]
     fn apply_fog_of_war() {
         let board = Board::from_string(
             "~~ ~~ A0 ~~ ~~\n\
@@ -3145,6 +3284,7 @@ pub mod tests {
                 0,
                 source_coord,
                 &rules::Visibility::LandFog,
+                &rules::BoardOrientation::Standard,
                 &HashSet::new(),
             );
             assert_eq!(game_coord, Coordinate { x: 5, y: 5 });
@@ -3153,6 +3293,7 @@ pub mod tests {
                     0,
                     game_coord,
                     &rules::Visibility::LandFog,
+                    &rules::BoardOrientation::Standard,
                     &HashSet::new()
                 ),
                 Some(source_coord)
@@ -3179,6 +3320,7 @@ pub mod tests {
                 1,
                 source_coord,
                 &rules::Visibility::LandFog,
+                &rules::BoardOrientation::Standard,
                 &HashSet::new(),
             );
             assert_eq!(game_coord, Coordinate { x: 8, y: 7 });
@@ -3187,6 +3329,66 @@ pub mod tests {
                     1,
                     game_coord,
                     &rules::Visibility::LandFog,
+                    &rules::BoardOrientation::Standard,
+                    &HashSet::new()
+                ),
+                Some(source_coord)
+            );
+        }
+    }
+
+    #[test]
+    fn remap_foggy_rotated_coordinates() {
+        let board = Board::from_string(
+            "__ __ __ __ __ __ __ __ __ __ __\n\
+             __ __ __ __ __ __ ~~ __ __ __ __\n\
+             __ __ __ __ ~~ ~~ ~~ ~~ ~~ ~~ ~~\n\
+             __ __ __ __ ~~ ~~ A0 ~~ ~~ ~~ ~~\n\
+             __ __ __ __ A0 ~~ A0 __ A0 A0 __\n\
+             __ __ __ __ A0 __ __ A0 __ A0 __\n\
+             __ __ __ __ A0 __ __ __ __ __ __\n\
+             __ __ __ __ __ B1 __ B1 __ __ __\n\
+             __ __ __ __ __ B1 B1 B1 __ __ __\n\
+             ~~ __ __ __ __ __ B1 __ __ __ __\n\
+             __ __ __ __ __ __ B1 __ __ __ __\n\
+             __ __ __ __ ~~ ~~ B1 ~~ ~~ ~~ ~~",
+        );
+        {
+            let foggy = board.filter_to_player(
+                0,
+                &rules::Visibility::LandFog,
+                &rules::BoardOrientation::FacingPlayer,
+                &None,
+                &HashSet::new(),
+                true,
+            );
+            assert_eq!(
+                foggy.to_string(),
+                "░░ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░░ ░░\n\
+                 ░░ ░░ ░░ B1 ░░ B1 __ ░░ ░░ ░░\n\
+                 ░░ __ ░░ B1 ░░ B1 __ __ ░░ ░░\n\
+                 __ __ __ __ __ __ A0 __ __ ░░\n\
+                 __ A0 __ A0 __ __ A0 __ __ ░░\n\
+                 __ A0 A0 __ A0 ~~ A0 __ __ ░░\n\
+                 ~~ ~~ ~~ ~~ A0 ~~ ~~ __ ░░ ░░\n\
+                 ░░ ~~ ~~ ~~ ~~ ~~ ~~ ░░ ░░ ░░",
+            );
+
+            let source_coord = Coordinate { x: 6, y: 4 };
+            let game_coord = board.map_player_coord_to_game(
+                0,
+                source_coord,
+                &rules::Visibility::LandFog,
+                &rules::BoardOrientation::FacingPlayer,
+                &HashSet::new(),
+            );
+            assert_eq!(game_coord, Coordinate { x: 4, y: 5 });
+            assert_eq!(
+                board.map_game_coord_to_player(
+                    0,
+                    game_coord,
+                    &rules::Visibility::LandFog,
+                    &rules::BoardOrientation::FacingPlayer,
                     &HashSet::new()
                 ),
                 Some(source_coord)
